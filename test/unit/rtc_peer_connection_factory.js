@@ -7,18 +7,19 @@
 import './test-setup';
 import RtcPeerConnectionFactory from '../../src/js/rtc_peer_connection_factory';
 import chai from 'chai';
-import sinon, {sandbox} from 'sinon';
+import sinon from 'sinon';
 import {RTC_PEER_CONNECTION_IDLE_TIMEOUT_MS} from "../../src/js/rtc_const";
 import StandardStrategy from "../../src/js/strategies/StandardStrategy";
-import CitrixVDIStrategy from "../../src/js/strategies/CitrixVDIStrategy";
 
 describe('RTC Peer Connection Factory', () => {
 
     sinon.stub(RtcPeerConnectionFactory.prototype, '_initializeWebSocketEventListeners').returns({});
     sinon.stub(RtcPeerConnectionFactory.prototype, '_networkConnectivityChecker').returns({});
     sinon.stub(RtcPeerConnectionFactory.prototype, '_isEarlyMediaConnectionSupported').returns(true);
-    var createPeerConnectionStub = sinon.stub(RtcPeerConnectionFactory.prototype, '_createRtcPeerConnection').returns({});
+    var closePeerConnectionStub = sinon.stub();
+    var createPeerConnectionStub = sinon.stub(RtcPeerConnectionFactory.prototype, '_createRtcPeerConnection').returns({ close: closePeerConnectionStub });
     var requestAccessStub = sinon.stub().resolves('iceServer');
+    var setTimeoutSpy = sinon.spy(global, "setTimeout");
 
     describe('StandardStrategy', () => {
         var pcFactory = new RtcPeerConnectionFactory(console, null, null, requestAccessStub, sinon.stub(), new StandardStrategy());
@@ -31,6 +32,24 @@ describe('RTC Peer Connection Factory', () => {
             await chai.assert(requestAccessStub.calledOnce);
             chai.assert(createPeerConnectionStub.calledOnce);
             chai.assert(createPeerConnectionStub.calledWith('iceServer'));
+            chai.assert.isFalse(pcFactory._peerConnectionRequestInFlight);
+        });
+
+        it('check _idleRtcPeerConnectionTimerId is set and _refreshRtcPeerConnection is set to invoke in 1 minute', async() => {
+            chai.assert.isNotNull(pcFactory._idleRtcPeerConnectionTimerId);
+            chai.expect(pcFactory._idleRtcPeerConnectionTimerId).to.have.property('_idleTimeout');
+            chai.assert(setTimeoutSpy.calledOnce);
+            setTimeoutSpy.calledWithExactly(pcFactory._refreshRtcPeerConnection, 60000);
+        });
+
+        it('check _refreshPeerConnection will close idle peer connection and request a new one', async() => {
+            requestAccessStub.resetHistory();
+            createPeerConnectionStub.resetHistory();
+            pcFactory._refreshRtcPeerConnection();
+            chai.assert(closePeerConnectionStub.calledOnce);
+            chai.assert.isTrue(pcFactory._peerConnectionRequestInFlight);
+            await chai.assert(requestAccessStub.calledOnce);
+            chai.assert(createPeerConnectionStub.calledOnce);
             chai.assert.isFalse(pcFactory._peerConnectionRequestInFlight);
         });
 
@@ -73,27 +92,15 @@ describe('RTC Peer Connection Factory', () => {
             pcFactory.clearIdleRtcPeerConnectionTimerId();
             chai.assert.isNull(pcFactory._idleRtcPeerConnectionTimerId);
         });
-    });
 
-    describe('CitrixStrategy', () => {
-
-        afterEach(() => {
-            sandbox.restore();
+        it('check close clears _idleRtcPeerConnectionTimerId and closes idle peer connection', () => {
+            closePeerConnectionStub.resetHistory();
+            pcFactory._idleRtcPeerConnectionTimerId = setTimeout(() => {console.log('clearIdleRtcPeerConnectionTimerIdTest');}, 0);
+            chai.assert.isNotNull(pcFactory._idleRtcPeerConnectionTimerId);
+            pcFactory.close();
+            chai.assert.isNull(pcFactory._idleRtcPeerConnectionTimerId);
+            chai.assert(closePeerConnectionStub.calledOnce);
+            chai.assert.isNull(pcFactory._idlePc);
         });
-
-        it('uses CitrixVDIStrategy', async () => {
-            sandbox.stub(window.CitrixWebRTC, 'isFeatureOn').returns(true);
-            global.connect.getLog = sandbox.stub();
-            new RtcPeerConnectionFactory(console, null, null, requestAccessStub, sandbox.stub(), new CitrixVDIStrategy());
-            chai.assert(console.log.calledWith('CitrixVDIStrategy initialized'));
-        });
-
-        it('throws error when isCitrixWebRTCSupported returns false', async () => {
-            sandbox.stub(window.CitrixWebRTC, 'isFeatureOn').returns(false);
-            chai.expect(() => {
-                new RtcPeerConnectionFactory(console, null, null, requestAccessStub, sandbox.stub(), new CitrixVDIStrategy());
-            }).to.throw('Citrix WebRTC redirection feature is NOT supported!');
-        });
-
     });
 });
